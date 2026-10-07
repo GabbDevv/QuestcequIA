@@ -1,0 +1,3 @@
+streamlit>=1.37
+pandas
+anthropic  # facultatif : uniquement pour l'analyse par LLM
