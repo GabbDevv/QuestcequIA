@@ -219,5 +219,8 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+# Mac
+.DS_Store
+
 
 questcequia.db
