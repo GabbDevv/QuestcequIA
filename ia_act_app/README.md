@@ -22,7 +22,13 @@ est créée au premier lancement.
 4. **Questionnaire** : le participant répond par son lien ; les réponses sont
    enregistrées en base.
 5. **Lancer le rapport** : disponible quand tous ont répondu (statut Complet).
-6. **Rapport** : réponses côte à côte, analyse, puis émission (statut Émis).
+6. **Rapport** : réponses côte à côte et analyse initiale. La dernière colonne
+   du tableau, **Réponse finale**, reçoit pour chaque question la réponse
+   arrêtée par consensus de tous les participants (les réponses unanimes sont
+   proposées d'office).
+7. **Rapport final** : une nouvelle analyse est générée à partir des réponses
+   finales. C'est ce rapport qui est émis (statut Émis) ; l'émission n'est
+   possible que s'il correspond aux réponses finales affichées.
 
 ## Fichiers
 
@@ -30,7 +36,7 @@ est créée au premier lancement.
 | --- | --- |
 | `app.py` | Écrans et navigation |
 | `db.py` | Tables SQLite et changements de statut |
-| `analyse.py` | Questions du questionnaire, analyse par règles ou par LLM |
+| `analyse.py` | Questions du questionnaire, analyse initiale et rapport final, par règles ou par LLM |
 | `courriel.py` | Envoi d'e-mails (facultatif) |
 
 ## Configuration (variables d'environnement, toutes facultatives)

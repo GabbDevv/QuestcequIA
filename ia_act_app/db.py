@@ -2,7 +2,9 @@
 
 Trois tables :
 - participants : les personnes que l'on peut inviter ;
-- projets      : un cas d'usage et son statut (Ouvert -> Complet -> Émis) ;
+- projets      : un cas d'usage et son statut (Ouvert -> Complet -> Émis), avec
+                 l'analyse initiale, les réponses finales arrêtées par
+                 consensus et le rapport final ;
 - invitations  : un questionnaire par (projet, participant), avec ses réponses.
 """
 
@@ -36,7 +38,9 @@ CREATE TABLE IF NOT EXISTS projets (
     statut       TEXT NOT NULL DEFAULT 'Ouvert',
     cree_le      TEXT NOT NULL,
     rapport_json TEXT,
-    emis_le      TEXT
+    emis_le      TEXT,
+    reponses_finales_json TEXT,
+    rapport_final_json    TEXT
 );
 CREATE TABLE IF NOT EXISTS invitations (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,10 +72,24 @@ def connexion():
         conn.close()
 
 
+# Colonnes ajoutées après la première version : créées sur les bases existantes.
+COLONNES_AJOUTEES = {
+    "projets": {
+        "reponses_finales_json": "TEXT",
+        "rapport_final_json": "TEXT",
+    },
+}
+
+
 def init_db() -> None:
-    """Crée les tables si elles n'existent pas."""
+    """Crée les tables si elles n'existent pas et complète les anciennes bases."""
     with connexion() as conn:
         conn.executescript(SCHEMA)
+        for table, colonnes in COLONNES_AJOUTEES.items():
+            presentes = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+            for nom, type_sql in colonnes.items():
+                if nom not in presentes:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {nom} {type_sql}")
 
 
 # --- Participants -----------------------------------------------------------
@@ -116,7 +134,10 @@ def creer_projet(nom: str, description: str, participant_ids: list[int]) -> int:
 
 def _projet_depuis_row(row: sqlite3.Row) -> dict:
     projet = dict(row)
-    projet["rapport"] = json.loads(projet.pop("rapport_json")) if projet["rapport_json"] else None
+    # rapport : analyse initiale ; rapport_final : analyse des réponses finales.
+    for cle in ("rapport", "reponses_finales", "rapport_final"):
+        brut = projet.pop(f"{cle}_json")
+        projet[cle] = json.loads(brut) if brut else None
     return projet
 
 
@@ -144,6 +165,7 @@ def lire_projet(projet_id: int) -> dict | None:
 
 
 def enregistrer_rapport(projet_id: int, rapport: dict) -> None:
+    """Enregistre l'analyse initiale (réponses individuelles des participants)."""
     with connexion() as conn:
         conn.execute(
             "UPDATE projets SET rapport_json = ? WHERE id = ?",
@@ -151,14 +173,37 @@ def enregistrer_rapport(projet_id: int, rapport: dict) -> None:
         )
 
 
-def emettre_rapport(projet_id: int) -> None:
-    """Passe le projet au statut Émis. Le rapport doit déjà exister."""
+def enregistrer_rapport_final(projet_id: int, reponses_finales: dict, rapport: dict) -> None:
+    """Enregistre les réponses finales (consensus) et le rapport qui en découle.
+
+    Les deux sont écrits ensemble : le rapport final correspond toujours aux
+    réponses finales enregistrées. Sans effet une fois le rapport émis.
+    """
     with connexion() as conn:
         conn.execute(
+            "UPDATE projets SET reponses_finales_json = ?, rapport_final_json = ? "
+            "WHERE id = ? AND statut = ?",
+            (
+                json.dumps(reponses_finales, ensure_ascii=False),
+                json.dumps(rapport, ensure_ascii=False),
+                projet_id,
+                COMPLET,
+            ),
+        )
+
+
+def emettre_rapport(projet_id: int) -> bool:
+    """Passe le projet au statut Émis. Le rapport final doit déjà exister.
+
+    Renvoie True si le projet a bien été émis.
+    """
+    with connexion() as conn:
+        cur = conn.execute(
             "UPDATE projets SET statut = ?, emis_le = ? "
-            "WHERE id = ? AND statut = ? AND rapport_json IS NOT NULL",
+            "WHERE id = ? AND statut = ? AND rapport_final_json IS NOT NULL",
             (EMIS, _maintenant(), projet_id, COMPLET),
         )
+        return cur.rowcount == 1
 
 
 # --- Invitations et réponses ------------------------------------------------
@@ -201,9 +246,11 @@ def lire_invitation(token: str) -> dict | None:
 def enregistrer_reponses(token: str, reponses: dict, commentaire: str) -> str:
     """Enregistre les réponses d'un participant et met à jour le statut du projet.
 
-    Le projet passe à Complet dès que tous les invités ont répondu. Si un
-    rapport avait déjà été généré, il est effacé : il ne reflète plus les
-    réponses. Renvoie le statut du projet après enregistrement.
+    Le projet passe à Complet dès que tous les invités ont répondu. Si une
+    analyse ou un rapport final avaient déjà été générés, ils sont effacés :
+    ils ne reflètent plus les réponses. Les réponses finales déjà saisies sont
+    conservées comme point de départ. Renvoie le statut du projet après
+    enregistrement.
     """
     with connexion() as conn:
         inv = conn.execute(
@@ -229,7 +276,8 @@ def enregistrer_reponses(token: str, reponses: dict, commentaire: str) -> str:
         ).fetchone()[0]
         nouveau_statut = COMPLET if en_attente == 0 else OUVERT
         conn.execute(
-            "UPDATE projets SET statut = ?, rapport_json = NULL WHERE id = ?",
+            "UPDATE projets SET statut = ?, rapport_json = NULL, rapport_final_json = NULL "
+            "WHERE id = ?",
             (nouveau_statut, projet_id),
         )
     return nouveau_statut

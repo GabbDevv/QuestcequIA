@@ -8,7 +8,8 @@ Parcours :
 3. Suivi des réponses           -> page_projet   (statut Ouvert)
 4. Questionnaire du participant -> page_questionnaire (lien ?token=...)
 5. Lancer le rapport            -> page_projet   (statut Complet)
-6. Rapport et émission          -> page_rapport  (statut Émis)
+6. Rapport                      -> page_rapport  : analyse initiale, réponses
+   finales arrêtées par consensus, rapport final, puis émission (statut Émis)
 """
 
 from __future__ import annotations
@@ -32,6 +33,8 @@ COULEURS_STATUT = {
     COMPLET: ("#FBE9C8", "#6B4300"),
     EMIS: ("#111B2B", "#FFFFFF"),
 }
+COL_FINALE = "Réponse finale"
+
 DESCRIPTION_STATUT = {
     OUVERT: "Questionnaire envoyé, réponses en attente.",
     COMPLET: "Toutes les réponses reçues, rapport à lancer.",
@@ -76,6 +79,11 @@ def echelle_risque(niveau: str) -> str:
             style = "border:1px solid #8A94A6;opacity:0.75"
         cases.append(f'<div style="flex:1 1 150px;padding:12px 14px;border-radius:8px;{style}">{n}</div>')
     return '<div style="display:flex;gap:8px;flex-wrap:wrap">' + "".join(cases) + "</div>"
+
+
+def rapport_retenu(projet: dict) -> dict | None:
+    """Le rapport final s'il existe, sinon l'analyse initiale."""
+    return projet["rapport_final"] or projet["rapport"]
 
 
 def aller(page: str, projet_id: int | None = None) -> None:
@@ -154,8 +162,8 @@ def page_liste() -> None:
             total = p["nb_invites"] or 1
             c_rep.progress(p["nb_reponses"] / total, text=f"{p['nb_reponses']} / {p['nb_invites']}")
             c_date.write(date_fr(p["cree_le"]))
-            if p["statut"] == EMIS and p["rapport"]:
-                c_niveau.markdown(f"**{p['rapport']['niveau']}**")
+            if p["statut"] == EMIS and rapport_retenu(p):
+                c_niveau.markdown(f"**{rapport_retenu(p)['niveau']}**")
                 c_action.button("Voir le rapport", key=f"voir_{p['id']}",
                                 on_click=aller, args=("rapport", p["id"]))
             else:
@@ -284,8 +292,19 @@ def page_projet(projet_id: int) -> None:
             )
             c_bouton.button("Lancer le rapport", disabled=True)
         elif projet["rapport"]:
-            c_texte.markdown("**Le rapport est prêt**" if projet["statut"] == COMPLET else "**Rapport émis**")
-            c_texte.caption(f"Niveau de risque : {projet['rapport']['niveau']}.")
+            niveau = rapport_retenu(projet)["niveau"]
+            if projet["statut"] == EMIS:
+                c_texte.markdown("**Rapport émis**")
+                c_texte.caption(f"Niveau de risque : {niveau}.")
+            elif projet["rapport_final"]:
+                c_texte.markdown("**Le rapport final est prêt**")
+                c_texte.caption(f"Niveau de risque : {niveau}. Il reste à l'émettre.")
+            else:
+                c_texte.markdown("**L'analyse est prête**")
+                c_texte.caption(
+                    f"Niveau proposé : {niveau}. Arrêtez les réponses finales "
+                    "pour générer le rapport final."
+                )
             c_bouton.button("Voir le rapport", type="primary", on_click=aller, args=("rapport", projet_id))
         else:
             c_texte.markdown("**Toutes les réponses sont reçues**")
@@ -392,8 +411,13 @@ def page_questionnaire(token: str) -> None:
 
 # --- 6. Rapport -------------------------------------------------------------
 
-def tableau_reponses(invitations: list[dict], rapport: dict) -> pd.DataFrame:
-    """Une ligne par question, une colonne par participant, puis la colonne LLM."""
+def tableau_reponses(
+    invitations: list[dict], rapport: dict, reponses_finales: dict | None = None
+) -> pd.DataFrame:
+    """Une ligne par question : participants, analyse initiale, réponse finale.
+
+    La colonne « Réponse finale » n'apparaît que si `reponses_finales` est fourni.
+    """
     colonne_analyse = "LLM" if rapport["source"] == "llm" else "Analyse"
     lignes = []
     for q in analyse.QUESTIONS:
@@ -404,12 +428,93 @@ def tableau_reponses(invitations: list[dict], rapport: dict) -> pd.DataFrame:
         ligne[colonne_analyse] = (
             f"{item['reponse']} : {item['commentaire']}" if item["commentaire"] else item["reponse"]
         )
+        if reponses_finales is not None:
+            ligne[COL_FINALE] = reponses_finales.get(q["id"])
         lignes.append(ligne)
     return pd.DataFrame(lignes)
 
 
+def editeur_reponses_finales(projet: dict, invitations: list[dict]) -> dict[str, str]:
+    """Tableau des réponses dont seule la colonne « Réponse finale » se modifie.
+
+    Point de départ : les réponses finales déjà enregistrées, sinon la réponse
+    unanime des participants. Renvoie les réponses finales saisies, par id de
+    question (les questions laissées vides sont absentes).
+    """
+    depart = analyse.reponses_finales_proposees(invitations)
+    depart.update(projet["reponses_finales"] or {})
+    tableau = tableau_reponses(invitations, projet["rapport"], depart)
+    saisie = st.data_editor(
+        tableau,
+        hide_index=True,
+        key=f"finales_{projet['id']}",
+        disabled=[colonne for colonne in tableau.columns if colonne != COL_FINALE],
+        column_config={
+            COL_FINALE: st.column_config.SelectboxColumn(
+                COL_FINALE,
+                options=analyse.CHOIX,
+                help="Réponse arrêtée par consensus de tous les participants.",
+            )
+        },
+    )
+    return {
+        q["id"]: reponse
+        for q, reponse in zip(analyse.QUESTIONS, saisie[COL_FINALE])
+        if reponse in analyse.CHOIX
+    }
+
+
+def bloc_analyse(rapport: dict, final: bool = False) -> None:
+    """Niveau de risque, justification et actions d'une analyse."""
+    par_llm = rapport["source"] == "llm"
+    with st.container(border=True):
+        if final:
+            st.subheader("Rapport final")
+            st.caption(
+                (f"Généré par {rapport['modele']}" if par_llm else "Établi par les règles intégrées")
+                + " à partir des réponses finales, arrêtées par consensus des participants."
+            )
+        elif par_llm:
+            st.subheader("Réponse du LLM")
+            st.caption(
+                f"Proposition générée par {rapport['modele']} à partir du cas d'usage "
+                "et des réponses de chaque participant."
+            )
+        else:
+            st.subheader("Analyse par règles")
+            st.caption(
+                "Aucun LLM n'est configuré (variable ANTHROPIC_API_KEY) : le niveau "
+                "est déduit des réponses de chaque participant par des règles simples."
+            )
+        if rapport.get("avertissement"):
+            st.warning(rapport["avertissement"])
+
+        st.caption("NIVEAU DE RISQUE FINAL" if final else "NIVEAU DE RISQUE PROPOSÉ")
+        st.markdown(echelle_risque(rapport["niveau"]), unsafe_allow_html=True)
+        st.write("")
+
+        gauche, droite = st.columns(2)
+        gauche.markdown("**Justification**")
+        gauche.write(rapport["justification"])
+        droite.markdown("**À faire**")
+        droite.markdown("\n".join(f"- {action}" for action in rapport["actions"]) or "Rien à signaler.")
+
+        if rapport["divergences"]:
+            st.warning(
+                "**Divergences entre participants, à trancher par les réponses finales :**\n\n"
+                + "\n".join(f"- {d}" for d in rapport["divergences"])
+            )
+        if rapport.get("reserves"):
+            st.warning(
+                "**Points où le LLM s'écarte des réponses finales :**\n\n"
+                + "\n".join(f"- {r}" for r in rapport["reserves"])
+            )
+
+
 def rapport_markdown(projet: dict, invitations: list[dict]) -> str:
-    rapport = projet["rapport"]
+    """Le rapport à télécharger : le rapport final, sinon l'analyse initiale."""
+    initial, final = projet["rapport"], projet["rapport_final"]
+    rapport = final or initial
     origine = f"LLM ({rapport['modele']})" if rapport["source"] == "llm" else "règles intégrées"
     lignes = [
         f"# Rapport d'évaluation IA Act : {projet['nom']}",
@@ -417,7 +522,7 @@ def rapport_markdown(projet: dict, invitations: list[dict]) -> str:
         f"- Référence : {projet['ref']}",
         f"- Statut : {projet['statut']}",
         f"- Participants : {', '.join(inv['prenom'] for inv in invitations)}",
-        f"- Analyse produite par : {origine}",
+        f"- {'Rapport final établi' if final else 'Analyse produite'} par : {origine}",
         "",
         "## Cas d'usage",
         "",
@@ -432,17 +537,27 @@ def rapport_markdown(projet: dict, invitations: list[dict]) -> str:
         *[f"- {action}" for action in rapport["actions"]],
         "",
     ]
-    if rapport["divergences"]:
-        lignes += ["## Divergences entre participants", "", *[f"- {d}" for d in rapport["divergences"]], ""]
-    tableau = tableau_reponses(invitations, rapport)
+    if rapport.get("reserves"):
+        lignes += ["## Points où le LLM s'écarte des réponses finales", "",
+                   *[f"- {r}" for r in rapport["reserves"]], ""]
+    if not final and initial["divergences"]:
+        lignes += ["## Divergences entre participants", "", *[f"- {d}" for d in initial["divergences"]], ""]
+    tableau = tableau_reponses(invitations, initial, projet["reponses_finales"] if final else None)
     lignes += [
         "## Réponses par question",
         "",
         "| " + " | ".join(tableau.columns) + " |",
         "|" + " --- |" * len(tableau.columns),
-        *["| " + " | ".join(str(v) for v in ligne) + " |" for ligne in tableau.itertuples(index=False)],
+        *["| " + " | ".join("" if v is None else str(v) for v in ligne) + " |"
+          for ligne in tableau.itertuples(index=False)],
         "",
     ]
+    if final:
+        lignes += ["## Analyse initiale", "",
+                   f"Niveau proposé avant les réponses finales : {initial['niveau']}.", ""]
+        if initial["divergences"]:
+            lignes += ["Divergences entre participants, tranchées par les réponses finales :", "",
+                       *[f"- {d}" for d in initial["divergences"]], ""]
     commentaires = [f"- {inv['prenom']} : {inv['commentaire']}" for inv in invitations if inv["commentaire"]]
     if commentaires:
         lignes += ["## Commentaires des participants", "", *commentaires, ""]
@@ -454,8 +569,9 @@ def page_rapport(projet_id: int) -> None:
     if projet is None or projet["rapport"] is None:
         aller("projet" if projet else "liste", projet_id)
         st.rerun()
-    rapport = projet["rapport"]
+    rapport, rapport_final = projet["rapport"], projet["rapport_final"]
     invitations = db.lister_invitations(projet_id)
+    emis = projet["statut"] == EMIS
 
     st.button("Retour au projet", on_click=aller, args=("projet", projet_id))
     st.title("Rapport d'évaluation")
@@ -463,40 +579,61 @@ def page_rapport(projet_id: int) -> None:
     st.caption(f"{projet['nom']} · {projet['ref']} · {len(invitations)} participant(s)")
     afficher_annonce()
 
-    with st.container(border=True):
-        if rapport["source"] == "llm":
-            st.subheader("Réponse du LLM")
-            st.caption(
-                f"Proposition générée par {rapport['modele']} à partir du cas d'usage "
-                "et des réponses. À relire avant émission."
-            )
-        else:
-            st.subheader("Analyse par règles")
-            st.caption(
-                "Aucun LLM n'est configuré (variable ANTHROPIC_API_KEY) : le niveau "
-                "est déduit des réponses par des règles simples. À relire avant émission."
-            )
-        if rapport.get("avertissement"):
-            st.warning(rapport["avertissement"])
+    a_jour = False  # le rapport final correspond-il aux réponses finales affichées ?
+    if emis and rapport_final:
+        bloc_analyse(rapport_final, final=True)
+        st.subheader("Réponses par question")
+        st.dataframe(tableau_reponses(invitations, rapport, projet["reponses_finales"]), hide_index=True)
+        with st.expander("Analyse initiale"):
+            bloc_analyse(rapport)
+    elif emis:  # projet émis avant l'ajout des réponses finales
+        bloc_analyse(rapport)
+        st.subheader("Réponses par question")
+        st.dataframe(tableau_reponses(invitations, rapport), hide_index=True)
+    else:
+        bloc_analyse(rapport)
 
-        st.caption("NIVEAU DE RISQUE PROPOSÉ")
-        st.markdown(echelle_risque(rapport["niveau"]), unsafe_allow_html=True)
-        st.write("")
+        st.subheader("Réponses par question")
+        st.caption(
+            "Dans la colonne « Réponse finale », choisissez pour chaque question la "
+            "réponse arrêtée par consensus de tous les participants. Les réponses "
+            "unanimes sont proposées d'office et restent modifiables."
+        )
+        finales = editeur_reponses_finales(projet, invitations)
+        complet = analyse.reponses_finales_completes(finales)
+        a_jour = rapport_final is not None and finales == projet["reponses_finales"]
 
-        gauche, droite = st.columns(2)
-        gauche.markdown("**Justification**")
-        gauche.write(rapport["justification"])
-        droite.markdown("**À faire**")
-        droite.markdown("\n".join(f"- {action}" for action in rapport["actions"]) or "Rien à signaler.")
+        with st.container(border=True):
+            c_texte, c_bouton = st.columns([3, 1])
+            c_texte.markdown("**Réponses finales**")
+            if not complet:
+                manquantes = ", ".join(q["court"] for q in analyse.QUESTIONS if q["id"] not in finales)
+                c_texte.caption(f"Disponible quand chaque question a sa réponse finale. Il manque : {manquantes}.")
+            elif a_jour:
+                c_texte.caption("Le rapport final ci-dessous correspond aux réponses finales du tableau.")
+            elif rapport_final:
+                c_texte.warning(
+                    "Les réponses finales ont changé depuis le rapport final ci-dessous : "
+                    "régénérez-le avant de l'émettre."
+                )
+            else:
+                c_texte.caption(
+                    "Une nouvelle analyse est générée à partir des réponses finales : "
+                    "c'est elle qui sera émise."
+                )
+            if c_bouton.button(
+                "Régénérer le rapport final" if rapport_final else "Générer le rapport final",
+                type="secondary" if a_jour else "primary",
+                disabled=not complet,
+            ):
+                with st.spinner("Analyse des réponses finales en cours…"):
+                    db.enregistrer_rapport_final(
+                        projet_id, finales, analyse.analyser_final(projet, invitations, finales)
+                    )
+                st.rerun()
 
-        if rapport["divergences"]:
-            st.warning(
-                "**Divergences entre participants, à trancher avant émission :**\n\n"
-                + "\n".join(f"- {d}" for d in rapport["divergences"])
-            )
-
-    st.subheader("Réponses par question")
-    st.dataframe(tableau_reponses(invitations, rapport), hide_index=True)
+        if rapport_final:
+            bloc_analyse(rapport_final, final=True)
 
     commentaires = [inv for inv in invitations if inv["commentaire"]]
     if commentaires:
@@ -506,10 +643,10 @@ def page_rapport(projet_id: int) -> None:
             st.write(inv["commentaire"])
 
     with st.container(border=True):
-        if projet["statut"] == EMIS:
+        if emis:
             c_texte, c_bouton = st.columns([3, 1])
             c_texte.markdown(f"**Rapport émis le {date_fr(projet['emis_le'])}**")
-            c_texte.caption(f"Niveau retenu : {rapport['niveau']}.")
+            c_texte.caption(f"Niveau retenu : {rapport_retenu(projet)['niveau']}.")
             c_bouton.download_button(
                 "Télécharger le rapport",
                 data=rapport_markdown(projet, invitations),
@@ -518,20 +655,25 @@ def page_rapport(projet_id: int) -> None:
             )
         else:
             c_texte, c_regenerer, c_emettre = st.columns([3, 1, 1])
-            c_texte.markdown("**Émettre ce rapport ?**")
-            c_texte.caption("Le projet passe au statut Émis. Cette action est définitive.")
-            if c_regenerer.button("Régénérer l'analyse"):
+            c_texte.markdown("**Émettre le rapport final ?**")
+            c_texte.caption(
+                "Le projet passe au statut Émis. Cette action est définitive." if a_jour
+                else "Générez d'abord le rapport final à partir des réponses finales."
+            )
+            if c_regenerer.button("Régénérer l'analyse initiale"):
                 with st.spinner("Analyse des réponses en cours…"):
                     db.enregistrer_rapport(projet_id, analyse.analyser(projet, invitations))
                 st.rerun()
-            if c_emettre.button("Émettre le rapport", type="primary"):
-                db.emettre_rapport(projet_id)
+            if c_emettre.button("Émettre le rapport", type="primary", disabled=not a_jour):
+                if not db.emettre_rapport(projet_id):
+                    st.error("Le rapport n'a pas pu être émis : régénérez le rapport final.")
+                    st.stop()
                 projet = db.lire_projet(projet_id)
                 texte = rapport_markdown(projet, invitations)
                 envoyes = sum(courriel.envoyer_rapport(inv, projet, texte) for inv in invitations)
                 annoncer(
-                    f"Rapport émis et envoyé à {envoyes} participant(s)." if envoyes
-                    else "Rapport émis."
+                    f"Rapport final émis et envoyé à {envoyes} participant(s)." if envoyes
+                    else "Rapport final émis."
                 )
                 st.rerun()
 
