@@ -15,7 +15,10 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
 
-DB_PATH = os.getenv("IA_ACT_DB", os.path.join(os.path.dirname(__file__), "ia_act.db"))
+DB_PATH = os.getenv(
+    "IA_ACT_DB",
+    os.path.join(os.path.dirname(os.path.dirname(__file__)), "questcequia.db"),
+)
 
 OUVERT, COMPLET, EMIS = "Ouvert", "Complet", "Émis"
 
