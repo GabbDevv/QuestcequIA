@@ -43,11 +43,15 @@ est créée au premier lancement.
 
 | Variable | Effet |
 | --- | --- |
-| `ANTHROPIC_API_KEY` | Active l'analyse par LLM. Sans elle, des règles simples classent le projet. |
-| `IA_ACT_MODELE` | Modèle utilisé (`claude-sonnet-5-5` par défaut). |
+| `ANTHROPIC_API_KEY` | Active l'analyse par le LLM Anthropic (paquet `anthropic`). |
+| `GOOGLE_API_KEY` | Active l'analyse par le LLM Gemini (paquet `google-genai`). Si `ANTHROPIC_API_KEY` est aussi renseignée, c'est Anthropic qui est utilisé. |
+| `IA_ACT_MODELE` | Modèle utilisé, à choisir chez le fournisseur actif. Par défaut : `claude-sonnet-5-5` (Anthropic) ou `gemini-3.8-flash` (Gemini). |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM` | Active l'envoi des invitations et du rapport par e-mail. Sans elles, les liens s'affichent sur l'écran de suivi. |
 | `IA_ACT_URL` | Adresse publique de l'application, pour les liens de questionnaire. |
 | `IA_ACT_DB` | Chemin de la base SQLite. |
+
+Sans clé d'API, ou si le LLM ne répond pas, des règles simples classent le
+projet.
 
 ## Limites connues
 

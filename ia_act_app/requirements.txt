@@ -1,3 +1,4 @@
 streamlit>=1.37
 pandas
-anthropic  # facultatif : uniquement pour l'analyse par LLM
+anthropic     # facultatif : analyse par le LLM Anthropic (ANTHROPIC_API_KEY)
+google-genai  # facultatif : analyse par le LLM Gemini (GOOGLE_API_KEY)

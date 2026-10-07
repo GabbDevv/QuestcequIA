@@ -483,7 +483,7 @@ def bloc_analyse(rapport: dict, final: bool = False) -> None:
         else:
             st.subheader("Analyse par règles")
             st.caption(
-                "Aucun LLM n'est configuré (variable ANTHROPIC_API_KEY) : le niveau "
+                "Aucun LLM n'est configuré (variable ANTHROPIC_API_KEY ou GOOGLE_API_KEY) : le niveau "
                 "est déduit des réponses de chaque participant par des règles simples."
             )
         if rapport.get("avertissement"):
